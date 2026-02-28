@@ -1,6 +1,7 @@
 """Minimal backtesting module for the live bot strategy."""
 
 import argparse
+from collections import Counter
 from types import SimpleNamespace
 
 import pandas as pd
@@ -10,10 +11,49 @@ from exchange import GateioFuturesClient
 from strategy import generate_signal
 
 
-def fetch_ohlcv_df(symbol, timeframe, limit, since=None):
-    """거래소 OHLCV를 받아 DataFrame(timestamp, open, high, low, close, volume)로 변환합니다."""
-    client = GateioFuturesClient(config.API_KEY, config.API_SECRET)
-    candles = client.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit, since=since)
+def fetch_ohlcv_paged(client, symbol, timeframe, total_candles, chunk_limit, since=None):
+    """since 기반 페이지 조회로 단일 limit보다 긴 히스토리를 수집합니다."""
+    all_candles = []
+    next_since = since
+
+    while len(all_candles) < total_candles:
+        remain = total_candles - len(all_candles)
+        fetch_limit = min(chunk_limit, remain)
+
+        batch = client.fetch_ohlcv(
+            symbol,
+            timeframe=timeframe,
+            limit=fetch_limit,
+            since=next_since,
+        )
+        if not batch:
+            break
+
+        all_candles.extend(batch)
+
+        # 중복 방지를 위해 since를 마지막 timestamp + 1ms로 이동합니다.
+        last_ts = batch[-1][0]
+        next_since = last_ts + 1
+
+        # 새 데이터가 더 이상 늘어나지 않으면 루프 중단
+        if len(batch) < fetch_limit:
+            break
+
+    # timestamp 기준 dedupe + 정렬 (거래소 응답 중복 대비)
+    by_ts = {row[0]: row for row in all_candles}
+    ordered = [by_ts[ts] for ts in sorted(by_ts.keys())]
+    return ordered[:total_candles]
+
+
+def build_ohlcv_df(client, symbol, timeframe, total_candles, chunk_limit, since=None):
+    candles = fetch_ohlcv_paged(
+        client=client,
+        symbol=symbol,
+        timeframe=timeframe,
+        total_candles=total_candles,
+        chunk_limit=chunk_limit,
+        since=since,
+    )
     df = pd.DataFrame(
         candles,
         columns=["timestamp", "open", "high", "low", "close", "volume"],
@@ -39,6 +79,25 @@ def calc_trade_return(side, entry_price, exit_price, fee_rate):
     else:
         gross = (entry_price / exit_price) - 1
     return gross - 2 * fee_rate
+
+
+def print_signal_debug_counts(df, cfg):
+    # debug 출력 목적: 실제 진입 이전에 신호 분포/hold 사유를 확인해 전략이 너무 엄격한지 점검합니다.
+    candles = df[["timestamp", "open", "high", "low", "close", "volume"]].values.tolist()
+    min_needed = max(cfg.BB_PERIOD + 1, cfg.RSI_PERIOD + 1, cfg.ADX_PERIOD + 1)
+
+    signal_counts = Counter()
+    reason_counts = Counter()
+
+    for i in range(min_needed, len(candles)):
+        signal, _, _, reason = generate_signal(candles[: i + 1], cfg)
+        signal_counts[signal] += 1
+        reason_counts[reason] += 1
+
+    print(f"[DEBUG] signal counts: {dict(signal_counts)}")
+    print("[DEBUG] top reasons:")
+    for reason, count in reason_counts.most_common(10):
+        print(f"  - {reason}: {count}")
 
 
 def run_backtest(df, cfg):
@@ -213,8 +272,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Simple backtest for Gate.io futures strategy")
     parser.add_argument("--symbol", default=config.SYMBOL)
     parser.add_argument("--timeframe", default=config.TIMEFRAME)
-    parser.add_argument("--limit", type=int, default=2000)
+    parser.add_argument("--total_candles", type=int, default=10000)
+    parser.add_argument("--chunk_limit", type=int, default=2000)
     parser.add_argument("--since", type=int, default=None)
+    parser.add_argument("--preset", choices=["strict", "relaxed"], default="strict")
     parser.add_argument("--fee-rate", type=float, default=config.FEE_RATE)
     parser.add_argument("--slippage-pct", type=float, default=config.SLIPPAGE_PCT)
     parser.add_argument("--save-csv", action="store_true")
@@ -229,16 +290,31 @@ def main():
     cfg.FEE_RATE = args.fee_rate
     cfg.SLIPPAGE_PCT = args.slippage_pct
 
-    df = fetch_ohlcv_df(
+    # strict/relaxed 프리셋은 백테스트에서만 신호 민감도 점검용으로 사용합니다(실거래 설정은 변경하지 않음).
+    if args.preset == "relaxed":
+        cfg.RSI_OVERSOLD = 40
+        cfg.RSI_OVERBOUGHT = 60
+        cfg.ADX_MAX = 35
+
+    print(
+        f"Preset={args.preset} | RSI_OVERSOLD={cfg.RSI_OVERSOLD} RSI_OVERBOUGHT={cfg.RSI_OVERBOUGHT} ADX_MAX={cfg.ADX_MAX}"
+    )
+
+    client = GateioFuturesClient(config.API_KEY, config.API_SECRET)
+    df = build_ohlcv_df(
+        client=client,
         symbol=args.symbol,
         timeframe=args.timeframe,
-        limit=args.limit,
+        total_candles=args.total_candles,
+        chunk_limit=args.chunk_limit,
         since=args.since,
     )
 
     print(
-        f"Loaded candles: {len(df)} | symbol={args.symbol} timeframe={args.timeframe} limit={args.limit}"
+        f"Requested candles={args.total_candles}, loaded candles={len(df)} | symbol={args.symbol} timeframe={args.timeframe}"
     )
+
+    print_signal_debug_counts(df, cfg)
     trades_df = run_backtest(df, cfg)
     print_summary(trades_df)
 
