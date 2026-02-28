@@ -51,11 +51,9 @@ def fetch_ohlcv_paged(
 
         # Gate.io 선물 제약: from/to와 limit를 동시에 보내면 요청이 실패합니다.
         # 따라서 from/to 윈도우 요청에서는 limit를 전달하지 않습니다.
-        batch = client.fetch_ohlcv(
+        batch = client.exchange.fetch_ohlcv(
             symbol,
             timeframe=timeframe,
-            since=None,
-            limit=None,
             params={
                 "from": int(window_start_ms / 1000),
                 "to": int(window_end_ms / 1000),
