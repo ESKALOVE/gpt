@@ -46,14 +46,16 @@ def fetch_ohlcv_paged(
 
     while window_start_ms < end_ms and len(all_candles) < total_candles:
         call_no += 1
-        remain = total_candles - len(all_candles)
-        step_candles = min(chunk_limit, remain)
-        window_end_ms = min(window_start_ms + step_candles * timeframe_ms, end_ms)
+        # chunk_limit은 '요청 limit'가 아니라 '시간 윈도우 크기' 계산에만 사용합니다.
+        window_end_ms = min(window_start_ms + chunk_limit * timeframe_ms, end_ms)
 
-        # from/to 윈도우 요청에서는 limit를 절대 함께 넘기지 않습니다.
+        # Gate.io 선물 제약: from/to와 limit를 동시에 보내면 요청이 실패합니다.
+        # 따라서 from/to 윈도우 요청에서는 limit를 전달하지 않습니다.
         batch = client.fetch_ohlcv(
             symbol,
             timeframe=timeframe,
+            since=None,
+            limit=None,
             params={
                 "from": int(window_start_ms / 1000),
                 "to": int(window_end_ms / 1000),
@@ -65,6 +67,7 @@ def fetch_ohlcv_paged(
             print(
                 "[FETCH] "
                 f"call={call_no} "
+                "style=from_to_only(limit_not_sent=True) "
                 f"window_start_ms={int(window_start_ms)} "
                 f"window_start_utc={_format_ts(window_start_ms)} "
                 f"window_end_ms={int(window_end_ms)} "
