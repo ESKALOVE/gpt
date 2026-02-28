@@ -50,10 +50,10 @@ def fetch_ohlcv_paged(
         step_candles = min(chunk_limit, remain)
         window_end_ms = min(window_start_ms + step_candles * timeframe_ms, end_ms)
 
+        # from/to 윈도우 요청에서는 limit를 절대 함께 넘기지 않습니다.
         batch = client.fetch_ohlcv(
             symbol,
             timeframe=timeframe,
-            limit=None,
             params={
                 "from": int(window_start_ms / 1000),
                 "to": int(window_end_ms / 1000),
@@ -61,6 +61,7 @@ def fetch_ohlcv_paged(
         )
 
         if debug_fetch:
+            window_size_candles = max(1, int((window_end_ms - window_start_ms) / timeframe_ms))
             print(
                 "[FETCH] "
                 f"call={call_no} "
@@ -68,6 +69,7 @@ def fetch_ohlcv_paged(
                 f"window_start_utc={_format_ts(window_start_ms)} "
                 f"window_end_ms={int(window_end_ms)} "
                 f"window_end_utc={_format_ts(window_end_ms)} "
+                f"window_size_candles={window_size_candles} "
                 f"returned={len(batch)}"
             )
 

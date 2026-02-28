@@ -22,13 +22,14 @@ class GateioFuturesClient:
         since: int | None = None,
         params: dict | None = None,
     ):
-        return self.exchange.fetch_ohlcv(
-            symbol,
-            timeframe=timeframe,
-            limit=limit,
-            since=since,
-            params=params or {},
-        )
+        kwargs = {"timeframe": timeframe, "params": params or {}}
+        if since is not None:
+            kwargs["since"] = since
+        # Gate.io 선물처럼 from/to를 쓰는 경우 limit를 함께 보내면 오류가 날 수 있어
+        # limit가 None일 때는 아예 인자를 전달하지 않습니다.
+        if limit is not None:
+            kwargs["limit"] = limit
+        return self.exchange.fetch_ohlcv(symbol, **kwargs)
 
     def create_market_order(self, symbol: str, side: str, amount: float):
         return self.exchange.create_order(symbol, "market", side, amount)
