@@ -18,14 +18,16 @@ class GateioFuturesClient:
         self,
         symbol: str,
         timeframe: str = "5m",
-        limit: int = 100,
+        limit: int | None = 100,
         since: int | None = None,
+        params: dict | None = None,
     ):
         return self.exchange.fetch_ohlcv(
             symbol,
             timeframe=timeframe,
             limit=limit,
             since=since,
+            params=params or {},
         )
 
     def create_market_order(self, symbol: str, side: str, amount: float):

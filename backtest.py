@@ -12,19 +12,6 @@ from exchange import GateioFuturesClient
 from strategy import generate_signal
 
 
-def timeframe_to_ms(timeframe):
-    """ccxt timeframe 문자열(예: 15m)을 ms로 변환합니다."""
-    unit = timeframe[-1]
-    value = int(timeframe[:-1])
-    unit_ms = {
-        "m": 60_000,
-        "h": 3_600_000,
-        "d": 86_400_000,
-        "w": 604_800_000,
-    }
-    return value * unit_ms.get(unit, 1)
-
-
 def _format_ts(ts_ms):
     if ts_ms is None:
         return "None"
@@ -40,44 +27,76 @@ def fetch_ohlcv_paged(
     since=None,
     debug_fetch=False,
 ):
-    """since 기반 페이지 조회로 단일 limit보다 긴 히스토리를 수집합니다."""
-    all_candles = []
-    next_since = since
-    timeframe_ms = timeframe_to_ms(timeframe)
-    call_no = 0
+    """Gate.io 선물은 from/to 윈도우 조회를 사용해 안전하게 페이징합니다."""
+    exchange = client.exchange
+    timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
 
-    # 페이징 방식: 같은 심볼/타임프레임을 since를 앞으로 밀면서 반복 조회합니다.
-    while len(all_candles) < total_candles:
+    # Gate.io 선물에서 since 기반 호출은 from/to 조합 에러를 유발할 수 있어
+    # 명시적인 시간 윈도우(from/to)로 구간을 나눠 조회합니다.
+    end_ms = exchange.milliseconds()
+    if since is not None:
+        start_ms = since
+    else:
+        start_ms = end_ms - total_candles * timeframe_ms
+
+    all_candles = []
+    window_start_ms = start_ms
+    call_no = 0
+    stale_rounds = 0
+
+    while window_start_ms < end_ms and len(all_candles) < total_candles:
         call_no += 1
         remain = total_candles - len(all_candles)
-        fetch_limit = min(chunk_limit, remain)
+        step_candles = min(chunk_limit, remain)
+        window_end_ms = min(window_start_ms + step_candles * timeframe_ms, end_ms)
 
         batch = client.fetch_ohlcv(
             symbol,
             timeframe=timeframe,
-            limit=fetch_limit,
-            since=next_since,
+            limit=None,
+            params={
+                "from": int(window_start_ms / 1000),
+                "to": int(window_end_ms / 1000),
+            },
         )
 
         if debug_fetch:
             print(
-                f"[FETCH] call={call_no} since_ms={next_since} since_utc={_format_ts(next_since)} returned={len(batch)}"
+                "[FETCH] "
+                f"call={call_no} "
+                f"window_start_ms={int(window_start_ms)} "
+                f"window_start_utc={_format_ts(window_start_ms)} "
+                f"window_end_ms={int(window_end_ms)} "
+                f"window_end_utc={_format_ts(window_end_ms)} "
+                f"returned={len(batch)}"
             )
 
         if not batch:
-            break
+            stale_rounds += 1
+            if stale_rounds >= 3:
+                break
+            window_start_ms = window_end_ms
+            continue
 
+        before = len(all_candles)
         all_candles.extend(batch)
 
+        # 거래소가 from/to를 무시해 같은 데이터만 반복 반환할 수 있어
+        # 중복/정체 배치가 연속되면 무한루프 방지를 위해 중단합니다.
         last_ts = batch[-1][0]
-        # 다음 조회 시작 시점은 마지막 캔들 이후로 이동합니다.
-        # 기본은 timeframe_ms를 더하고, 비정상 값이면 +1ms를 사용합니다.
-        next_since = last_ts + timeframe_ms if timeframe_ms > 0 else last_ts + 1
+        proposed_next = max(window_end_ms, last_ts + timeframe_ms)
+        if proposed_next <= window_start_ms or len(all_candles) == before:
+            stale_rounds += 1
+            if stale_rounds >= 3:
+                break
+            window_start_ms = window_end_ms
+        else:
+            stale_rounds = 0
+            window_start_ms = proposed_next
 
-    # timestamp 기준 dedupe + 정렬 (거래소 응답 중복 대비)
     by_ts = {row[0]: row for row in all_candles}
     ordered = [by_ts[ts] for ts in sorted(by_ts.keys())]
-    return ordered[:total_candles]
+    return ordered[-total_candles:]
 
 
 def build_ohlcv_df(
