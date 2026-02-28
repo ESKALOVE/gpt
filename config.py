@@ -30,6 +30,11 @@ TIME_STOP_CANDLES = 12
 # 손절 직후 8개 캔들 동안 신규 진입 금지(쿨다운).
 COOLDOWN_AFTER_SL_CANDLES = 8
 
+# 백테스트 체결 비용 가정: 왕복 수수료(진입+청산)에 사용.
+FEE_RATE = 0.0006
+# 백테스트 슬리피지 가정: 진입/청산 체결가에 불리하게 반영.
+SLIPPAGE_PCT = 0.0000
+
 ORDER_SIZE = 0.001
 POLL_SECONDS = 30
 

@@ -14,8 +14,19 @@ class GateioFuturesClient:
             }
         )
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str = "5m", limit: int = 100):
-        return self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    def fetch_ohlcv(
+        self,
+        symbol: str,
+        timeframe: str = "5m",
+        limit: int = 100,
+        since: int | None = None,
+    ):
+        return self.exchange.fetch_ohlcv(
+            symbol,
+            timeframe=timeframe,
+            limit=limit,
+            since=since,
+        )
 
     def create_market_order(self, symbol: str, side: str, amount: float):
         return self.exchange.create_order(symbol, "market", side, amount)
